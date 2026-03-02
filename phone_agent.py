@@ -30,23 +30,50 @@ class PhoneAgent:
         """
         # Default configuration
         default_config = {
-            'device_id': None,  # Auto-detect first device if None
-            'screen_width': 1080,  # Must match your device
-            'screen_height': 2340,  # Must match your device
+            'device_id': None,
+            'screen_width': 1080,
+            'screen_height': 2340,
             'screenshot_dir': './screenshots',
             'max_retries': 3,
-            'model_name': 'Qwen/Qwen3-VL-30B-A3B-Instruct',
-            'use_flash_attention': False,
+            'api_base_url': 'https://openrouter.ai/api/v1',
+            'api_key': '',
+            'api_model': 'qwen/qwen3.5-35b-a3b',
+            'api_timeout': 120,
             'temperature': 0.1,
             'max_tokens': 512,
-            'step_delay': 1.5,  # Seconds to wait after each action
-            'enable_visual_debug': False,  # Save annotated screenshots
+            'step_delay': 1.5,
+            'enable_visual_debug': False,
         }
         
         self.config = default_config
         if config:
             self.config.update(config)
-        
+
+        # Environment variable overrides (higher priority than config)
+        env_overrides = {
+            'api_base_url': os.environ.get('API_BASE_URL'),
+            'api_key': os.environ.get('API_KEY') or os.environ.get('OPENROUTER_API_KEY'),
+            'api_model': os.environ.get('API_MODEL'),
+            'api_timeout': os.environ.get('API_TIMEOUT'),
+        }
+        for key, val in env_overrides.items():
+            if val is not None:
+                if key == 'api_timeout':
+                    val = int(val)
+                self.config[key] = val
+
+        # Handle deprecated fields
+        if self.config.get('use_flash_attention'):
+            logging.warning("'use_flash_attention' is deprecated and will be ignored (inference is now API-based)")
+        if self.config.get('model_name'):
+            logging.warning("'model_name' is deprecated, use 'api_model' instead")
+
+        # Validate required API config
+        if not self.config.get('api_base_url'):
+            raise ValueError("API base URL is required. Set 'api_base_url' in config.json or API_BASE_URL environment variable.")
+        if not self.config.get('api_key'):
+            raise ValueError("API key is required. Set 'api_key' in config.json, or API_KEY / OPENROUTER_API_KEY environment variable.")
+
         # Session context
         self.context = {
             'previous_actions': [],
@@ -66,11 +93,14 @@ class PhoneAgent:
         self._check_adb_connection()
         
         # Initialize Qwen3-VL agent
-        logging.info("Initializing Qwen3-VL agent...")
+        logging.info("Initializing VL agent via API...")
         self.vl_agent = QwenVLAgent(
-            use_flash_attention=self.config.get('use_flash_attention', False),
+            base_url=self.config['api_base_url'],
+            api_key=self.config['api_key'],
+            model=self.config.get('api_model', 'qwen/qwen3.5-35b-a3b'),
             temperature=self.config['temperature'],
             max_tokens=self.config['max_tokens'],
+            timeout=float(self.config.get('api_timeout', 120)),
         )
         logging.info("Phone agent ready")
     

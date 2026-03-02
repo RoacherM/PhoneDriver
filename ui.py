@@ -55,8 +55,10 @@ def get_default_config():
         "screen_height": 2340,
         "screenshot_dir": "./screenshots",
         "max_retries": 3,
-        "model_name": "Qwen/Qwen3-VL-30B-A3B-Instruct",
-        "use_flash_attention": False,
+        "api_base_url": "https://openrouter.ai/api/v1",
+        "api_key": "",
+        "api_model": "qwen/qwen3.5-35b-a3b",
+        "api_timeout": 120,
         "temperature": 0.1,
         "max_tokens": 512,
         "step_delay": 1.5,
@@ -238,27 +240,29 @@ def stop_task():
     return "No task running"
 
 
-def apply_settings(screen_width, screen_height, temp, max_tok, step_delay, use_fa2, visual_debug):
+def apply_settings(screen_width, screen_height, temp, max_tok, step_delay, api_url, api_key_val, api_model_val, visual_debug):
     """Apply settings changes to config."""
     global current_config
-    
+
     try:
         config = current_config or load_config()
-        
+
         config['screen_width'] = int(screen_width)
         config['screen_height'] = int(screen_height)
         config['temperature'] = float(temp)
         config['max_tokens'] = int(max_tok)
         config['step_delay'] = float(step_delay)
-        config['use_flash_attention'] = use_fa2
+        config['api_base_url'] = api_url
+        config['api_key'] = api_key_val
+        config['api_model'] = api_model_val
         config['enable_visual_debug'] = visual_debug
-        
+
         if save_config(config):
             current_config = config
             return "✓ Settings saved", json.dumps(config, indent=2)
         else:
             return "✗ Failed to save settings", json.dumps(config, indent=2)
-            
+
     except ValueError as e:
         return f"✗ Invalid value: {e}", json.dumps(current_config or {}, indent=2)
 
@@ -287,7 +291,7 @@ def create_ui():
     
     Path(current_config['screenshot_dir']).mkdir(parents=True, exist_ok=True)
     
-    with gr.Blocks(title="Phone Agent Control Panel", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(title="Phone Agent Control Panel") as demo:
         gr.Markdown("# 📱 Phone Agent Control Panel")
         gr.Markdown("*Powered by Qwen3-VL-30B for mobile GUI automation*")
         
@@ -325,7 +329,6 @@ def create_ui():
                     lines=15,
                     max_lines=20,
                     interactive=False,
-                    show_copy_button=True
                 )
                 
                 with gr.Row():
@@ -376,12 +379,23 @@ def create_ui():
                         step=0.1
                     )
                 
-                gr.Markdown("### Advanced Options")
-                
+                gr.Markdown("### API Configuration")
+
                 with gr.Row():
-                    use_flash_attn = gr.Checkbox(
-                        label="Use Flash Attention 2",
-                        value=current_config.get('use_flash_attention', False)
+                    api_base_url = gr.Textbox(
+                        label="API Base URL",
+                        value=current_config.get('api_base_url', 'https://openrouter.ai/api/v1')
+                    )
+                    api_key_input = gr.Textbox(
+                        label="API Key",
+                        value=current_config.get('api_key', ''),
+                        type="password"
+                    )
+
+                with gr.Row():
+                    api_model = gr.Textbox(
+                        label="Model Name",
+                        value=current_config.get('api_model', 'qwen/qwen3.5-35b-a3b')
                     )
                     visual_debug = gr.Checkbox(
                         label="Enable Visual Debug",
@@ -460,7 +474,9 @@ def create_ui():
                 temperature,
                 max_tokens,
                 step_delay,
-                use_flash_attn,
+                api_base_url,
+                api_key_input,
+                api_model,
                 visual_debug
             ],
             outputs=[settings_status, config_editor]

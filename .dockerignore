@@ -1,0 +1,13 @@
+.git/
+screenshots/
+*.log
+*.pyc
+__pycache__/
+Images/
+specs/
+docs/
+.env
+venv/
+phonedriver/
+*.png
+.claude/

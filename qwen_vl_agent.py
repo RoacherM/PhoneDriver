@@ -2,67 +2,44 @@
 import json
 import logging
 import re
+import base64
+import io
 from typing import Any, Dict, List, Optional
 
-import torch
 from PIL import Image
-from transformers import Qwen3VLForConditionalGeneration, AutoProcessor  # NOT MoeFor
-#from transformers import Qwen3VLMoeForConditionalGeneration, AutoProcessor - This is only for the MoE Variants!!!
-from qwen_vl_utils import process_vision_info
-import warnings
-
-# To supress these warnings you can uncomment the following two lines
-# warnings.filterwarnings('ignore', message='.*Flash Efficient attention.*')
-# warnings.filterwarnings('ignore', message='.*Mem Efficient attention.*')
+from openai import OpenAI
+import openai
 
 
 class QwenVLAgent:
     """
-    Vision-Language agent using Qwen3-VL-30B-A3B-Instruct for mobile GUI automation.
+    Vision-Language agent using an OpenAI-compatible API for mobile GUI automation.
     Uses the official mobile_use function calling format.
     """
 
     def __init__(
         self,
-        model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
-        device_map: str = "auto",
-        dtype: Optional[torch.dtype] = None,
-        use_flash_attention: bool = False,
+        base_url: str,
+        api_key: str,
+        model: str = "qwen/qwen3.5-35b-a3b",
         temperature: float = 0.1,
         max_tokens: int = 512,
+        timeout: float = 120.0,
     ) -> None:
-        """Initialize the Qwen3-VL agent."""
-        self.model_name = model_name
+        """Initialize the Qwen VL agent with an OpenAI-compatible API client."""
+        self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-        logging.info(f"Loading Qwen3-VL model: {model_name}")
-
-        if dtype is None:
-            dtype = torch.bfloat16
-
-        # Build model kwargs once; load once
-        model_kwargs: Dict[str, Any] = dict(
-            torch_dtype=dtype,
-            device_map=device_map,
-            low_cpu_mem_usage=True,
-            # Only for Strix Halo with 96gb set in bios
-            #max_memory={0: "90GiB"},
+        self.client = OpenAI(
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=3,
         )
 
-        if use_flash_attention:
-            try:
-                import flash_attn  # noqa: F401
-                model_kwargs["attn_implementation"] = "flash_attention_2"
-                logging.info("Flash Attention 2 enabled")
-            except Exception:
-                logging.warning("flash_attn not installed; using default attention")
+        logging.info(f"Initializing QwenVLAgent with model: {model} via {base_url}")
 
-        self.model = Qwen3VLForConditionalGeneration.from_pretrained(
-            model_name, **model_kwargs
-        )
-        self.processor = AutoProcessor.from_pretrained(model_name)
-        # For MoE Models You need to change to self.model=Qwen3VLMoeForConditionalGeneration.from_pretrained
         # System prompt matching official format
         self.system_prompt = """# Tools
 
@@ -85,7 +62,24 @@ Rules:
 - If finishing, use action=terminate in the tool call.
 - For each function call, there must be an "action" key in the "arguments" which denote the type of the action.
 - Coordinates are in 999x999 space where (0,0) is top-left and (999,999) is bottom-right."""
-        logging.info("Qwen3-VL agent initialized successfully")
+        logging.info("QwenVLAgent initialized successfully")
+
+    def _encode_image(self, screenshot_path: str) -> str:
+        """Load, resize, and base64-encode an image as a data URI."""
+        image = Image.open(screenshot_path)
+
+        # Resize if too large - keep aspect ratio, max dimension 1280
+        max_size = 1280
+        if max(image.size) > max_size:
+            ratio = max_size / max(image.size)
+            new_size = tuple(int(dim * ratio) for dim in image.size)
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
+            logging.info(f"Resized image from {Image.open(screenshot_path).size} to {image.size}")
+
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        encoded = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return f"data:image/png;base64,{encoded}"
 
     def analyze_screenshot(
         self,
@@ -95,16 +89,7 @@ Rules:
     ) -> Optional[Dict[str, Any]]:
         """Analyze a phone screenshot and determine the next action."""
         try:
-            # Load and resize image to prevent OOM
-            image = Image.open(screenshot_path)
-
-            # Resize if too large - keep aspect ratio, max dimension 1280
-            max_size = 1280
-            if max(image.size) > max_size:
-                ratio = max_size / max(image.size)
-                new_size = tuple(int(dim * ratio) for dim in image.size)
-                image = image.resize(new_size, Image.Resampling.LANCZOS)
-                logging.info(f"Resized image from {Image.open(screenshot_path).size} to {image.size}")
+            data_uri = self._encode_image(screenshot_path)
 
             # Build action history
             history = []
@@ -118,20 +103,19 @@ Rules:
             history_str = "; ".join(history) if history else "No previous actions"
 
             # Build user query in official format
-            user_query = f"""The user query: {user_request}.
-Task progress (You have done the following operation on the current device): {history_str}."""
+            user_query = f"The user query: {user_request}.\nTask progress (You have done the following operation on the current device): {history_str}."
 
-            # Messages in official format
+            # Messages in OpenAI format
             messages = [
                 {
                     "role": "system",
-                    "content": [{"type": "text", "text": self.system_prompt}],
+                    "content": self.system_prompt,
                 },
                 {
                     "role": "user",
                     "content": [
                         {"type": "text", "text": user_query},
-                        {"type": "image", "image": image},
+                        {"type": "image_url", "image_url": {"url": data_uri}},
                     ],
                 },
             ]
@@ -150,69 +134,30 @@ Task progress (You have done the following operation on the current device): {hi
             return None
 
     def _generate_action(self, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Generate an action from the model given messages."""
+        """Generate an action from the API given messages."""
         try:
-            # Use processor's chat template
-            text = self.processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
             )
 
-            # Collect image/video inputs
-            image_inputs, video_inputs = process_vision_info(messages)
-
-            # >>>>>>>>>> IMPORTANT FIX: avoid empty lists (use None) <<<<<<<<<<
-            if not image_inputs:
-                image_inputs = None
-            if not video_inputs:
-                video_inputs = None
-
-            inputs = self.processor(
-                text=[text],
-                images=image_inputs,
-                videos=video_inputs,   # None when no videos -> skips video path
-                padding=True,
-                return_tensors="pt",
-            )
-
-            # Move to device
-            inputs = inputs.to(self.model.device)
-
-            logging.debug("Generating model response...")
-
-            # Optional: clear cache around generation (works with HIP too)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            with torch.no_grad():
-                generated_ids = self.model.generate(
-                    **inputs,
-                    max_new_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    do_sample=self.temperature > 0,
-                    pad_token_id=self.processor.tokenizer.pad_token_id,
-                )
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            # Trim input tokens from output
-            generated_ids_trimmed = [
-                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-            ]
-
-            # Decode
-            output_text = self.processor.batch_decode(
-                generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-            )[0]
-
+            output_text = response.choices[0].message.content
             logging.debug(f"Model output: {output_text}")
 
             # Parse action
             action = self._parse_action(output_text)
             return action
 
-        except Exception as e:
-            logging.error(f"Error generating action: {e}", exc_info=True)
+        except openai.APIConnectionError as e:
+            logging.error(f"API connection error: {e}")
+            return None
+        except openai.APITimeoutError as e:
+            logging.error(f"API timeout error: {e}")
+            return None
+        except openai.APIStatusError as e:
+            logging.error(f"API status error: {e}")
             return None
 
     def _parse_action(self, text: str) -> Optional[Dict[str, Any]]:
@@ -310,13 +255,7 @@ Task progress (You have done the following operation on the current device): {hi
     ) -> Dict[str, Any]:
         """Ask the model if the task has been completed."""
         try:
-            # Load and resize image
-            image = Image.open(screenshot_path)
-            max_size = 1280
-            if max(image.size) > max_size:
-                ratio = max_size / max(image.size)
-                new_size = tuple(int(dim * ratio) for dim in image.size)
-                image = image.resize(new_size, Image.Resampling.LANCZOS)
+            data_uri = self._encode_image(screenshot_path)
 
             completion_query = f"""The user query: {user_request}.
 
@@ -330,13 +269,13 @@ If not complete, explain what still needs to be done and use action=terminate wi
             messages = [
                 {
                     "role": "system",
-                    "content": [{"type": "text", "text": self.system_prompt}],
+                    "content": self.system_prompt,
                 },
                 {
                     "role": "user",
                     "content": [
                         {"type": "text", "text": completion_query},
-                        {"type": "image", "image": image},
+                        {"type": "image_url", "image_url": {"url": data_uri}},
                     ],
                 },
             ]
