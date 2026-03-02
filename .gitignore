@@ -1,0 +1,16 @@
+# Environment & secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Internal docs & specs
+docs/
+specs/
+tasks/
+
+# Screenshots & test results
+screenshots/
+screenshots2/
