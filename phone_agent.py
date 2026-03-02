@@ -40,7 +40,7 @@ class PhoneAgent:
             'api_model': 'qwen/qwen3.5-35b-a3b',
             'api_timeout': 120,
             'temperature': 0.1,
-            'max_tokens': 512,
+            'max_tokens': 32768,
             'step_delay': 1.5,
             'enable_visual_debug': False,
         }

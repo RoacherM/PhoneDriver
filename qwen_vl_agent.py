@@ -23,7 +23,7 @@ class QwenVLAgent:
         api_key: str,
         model: str = "qwen/qwen3.5-35b-a3b",
         temperature: float = 0.1,
-        max_tokens: int = 512,
+        max_tokens: int = 32768,
         timeout: float = 120.0,
     ) -> None:
         """Initialize the Qwen VL agent with an OpenAI-compatible API client."""
